@@ -644,8 +644,8 @@ app.get('/member-stats', async (req, res) => {
 
   
     // Ping Command to Check MongoDB Deployment
-    await client.db('admin').command({ ping: 1 });
-    console.log('Pinged your deployment. MongoDB connection healthy 🚀');
+    // await client.db('admin').command({ ping: 1 });
+    // console.log('Pinged your deployment. MongoDB connection healthy 🚀');
 
   } catch (error) {
     console.error(error);
