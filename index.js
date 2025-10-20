@@ -4,23 +4,42 @@ const cookieParser = require('cookie-parser');
 const { MongoClient,ObjectId, ServerApiVersion } = require('mongodb');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 5000 ;
 const app = express();
 
 // Middlewares
 app.use(cors({
-  origin: 'https://spark-fit.web.app',  // or your frontend domain
+  origin: ['https://spark-fit.web.app' , 'http://localhost:5173'],  // or your frontend domain
   credentials: true
 }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); 
 app.use(cookieParser());
+
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.opap6sf.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 const Stripe = require('stripe')(process.env.PAYMENT_GATEWAY_KEY);
 
-//jwt middlewares
+// MongoDB Client Setup
+const client = new MongoClient(process.env.MONGODB_URI, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+});
+// client.connect()
+
+//   .then(() => {
+//     console.log(' MongoDB connected'); // ✅ REQUIRED — connects MongoDB before using collections
+
+    //jwt middlewares
 const verifyJWT = (req, res, next) => {
   const token = req?.headers?.authorization?.split(' ')[1];
-  if (!token) return res.status(401).send({ message: 'Unauthorized Access!' })
+   
+  try{
+  if (!token)    
+    return res.status(401).send({ message: 'Unauthorized Access!' })
   jwt.verify(token, process.env.JWT_ACCESS_SECRET, (err, decoded) => {
     if (err) {
       console.log(err);
@@ -31,17 +50,13 @@ const verifyJWT = (req, res, next) => {
     next()
   })
 }
+catch (error) {
+    console.error('JWT middleware error:', error);
+    res.status(500).json({ message: 'Server error in authentication' });
+  }
+};
 
-// MongoDB Client Setup
-const client = new MongoClient(process.env.MONGODB_URI, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-});
-
-async function run() {
+// async function run() {
     
     // Database and Collections
     const db = client.db('spark-fitDB');
@@ -51,14 +66,16 @@ async function run() {
     const paymentCollection = db.collection('payments');
     const subscriberCollection = db.collection('subscribers');
     const forumCollection = db.collection('forum');
+    const reviewCollection = db.collection('reviews');
+
  
-    try {
+    // try {
 
          // Generate jwt token
 
       app.post('/jwt', async (req, res) => {
       const userData = req.body;
-      const token = jwt.sign(userData, process.env.JWT_ACCESS_SECRET, { expiresIn: '1d' });
+      const token = jwt.sign(userData, process.env.JWT_ACCESS_SECRET, { expiresIn: '365d' });
       res.cookie('token', token, {
         httpOnly: true,
         secure: false
@@ -68,9 +85,9 @@ async function run() {
 
     })
 
-  
+  //POSt resister user
 
-  app.post('/users', async (req, res) => {
+  app.post('/users', verifyJWT, async (req, res) => {
   const user = req.body;
   console.log("Incoming User:", user);
 
@@ -97,6 +114,34 @@ async function run() {
   } else {
     res.send({ role: null });
   }
+});
+
+
+
+// PATCH- applied trainers info in users collection
+
+  app.patch('/apply-trainer', verifyJWT, async (req, res) => {
+   console.log('Received email:', ); 
+  const { email, ...formData } = req.body;
+  
+  console.log('Received email:', email);
+  console.log('Trainer data:', formData);
+  console.log('Incoming body:', req.body);
+
+
+  const updateDoc = {
+    $set: {
+      role: 'trainer',
+      status: 'pending',
+      ...formData,
+    },
+  };
+
+  const result = await usersCollection.updateOne({ email }, updateDoc, { upsert: true });
+   
+  console.log(' result:', result);
+
+  res.send(result);
 });
 
 //Get trainer
@@ -137,6 +182,18 @@ app.get('/trainers/:id', async (req, res) => {
   res.send({ ...trainer, availableSlots: slots });
 });
 
+// Get trainers for 
+app.get('/team-trainers', async (req, res) => {
+  const trainers = await usersCollection.find({ role: 'trainer', status: 'approved' }).toArray();
+  res.send(trainers);
+});
+
+    // GET user info
+   app.get('/all-users/:email', async (req, res) => {
+  const user = await usersCollection.findOne({ email: req.params.email });
+  res.send(user);
+});
+
 
  // Get trainers by Id for trainer details
 
@@ -156,51 +213,105 @@ app.get('/trainers/:id', async (req, res) => {
       res.send(result);
     })
 
-    // GET user info
-   app.get('/users/:email', async (req, res) => {
-  const user = await usersCollection.findOne({ email: req.params.email });
-  res.send(user);
-});
 
-
-    // PATCH update profile
-   app.patch('/users/:email', async (req, res) => {
+// PATCH update profile
+  app.patch('/update/:email', verifyJWT, async (req, res) => {
   const { name, photo } = req.body;
   const result = await usersCollection.updateOne(
     { email: req.params.email },
     { $set: { name, photo } }
+    
   );
   res.send(result);
 });
 
+// Get activity log
 
-// PATCH- applied trainers info in users collection
-
-  
-app.patch('/users/apply-trainer', async (req, res) => {
-  const { email, ...formData } = req.body;
-  
-  console.log('Received email:', email);
-  console.log('Trainer data:', formData);
-
-  const updateDoc = {
-    $set: {
-      role: 'trainer',
-      status: 'pending',
-      ...formData,
-    },
-  };
-
-  const result = await usersCollection.updateOne({ email }, updateDoc);
-  console.log(' result:', result);
-
-  res.send(result);
+app.get('/activity-log/:email', async (req, res) => {
+  const email = req.params.email;
+  const query = { email: email };
+  const result = await usersCollection.findOne(query) ;
+  res.send({ applications: result });
 });
+
+// POST Request for reviews
+
+app.post('/reviews', async (req, res) => {
+  try {
+    const { trainerName, rating, feedback, userEmail, userName } = req.body;
+
+    if (!trainerName || !rating || !userEmail || !userName) {
+      return res.status(400).send({ error: 'Missing required fields' });
+    }
+
+    // ✅ Step 1: Verify that this user paid for this trainer
+    const payment = await paymentCollection.findOne({
+      userEmail,
+      trainerName,
+      status: 'paid'
+    });
+ 
+
+    // ✅ Step 2: Find the trainer by name
+    const trainer = await usersCollection.findOne({
+      name: trainerName,
+      role: 'trainer',
+      status: 'approved'
+    });
+
+    if (!trainer) {
+      return res.status(404).send({ error: 'Trainer not found by name' });
+    }
+
+    // ✅ Step 3: Prepare and store the review
+    const newReview = {
+      userEmail,
+      userName,
+      rating,
+      feedback,
+      date: new Date()
+    };
+
+    const updateResult = await reviewCollection.updateOne(
+      { trainerName: trainer.name }, // use name as identifier for now
+      {
+        $set: {
+          trainerName: trainer.name,
+          trainerPhoto: trainer.photo
+        },
+        $push: { reviews: newReview }
+      },
+      { upsert: true }
+    );
+
+    if (updateResult.modifiedCount > 0 || updateResult.upsertedCount > 0) {
+      return res.status(200).send({ message: 'Review added successfully' });
+    } else {
+      return res.status(500).send({ error: 'Failed to add review' });
+    }
+
+  } catch (error) {
+    console.error('Error adding review:', error);
+    return res.status(500).send({ error: 'Internal server error' });
+  }
+});
+
+// Get member's review
+// Returns: [{ trainerEmail, trainerName, trainerPhoto, reviews: [...] }, ...]
+app.get('/reviews', async (req, res) => {
+  try {
+    const reviews = await reviewCollection.find().toArray();
+    res.send(reviews);
+  } catch (err) {
+    res.status(500).send({ error: "Failed to load reviews" });
+  }
+});
+
 
 
 //  Aggregate to get trainer, slot and classes for Trainer booked page
 
-app.get('/booking-trainer/:id', async (req, res) => {
+app.get('/booking-trainer/:id',verifyJWT, async (req, res) => {
   const { id } = req.params;
   console.log({id});
   
@@ -251,14 +362,14 @@ app.get('/booking-trainer/:id', async (req, res) => {
 });
 
 // Get all pending trainers
-app.get("/applied-trainers", async (req, res) => {
+app.get("/applied-trainers", verifyJWT, async (req, res) => {
   const pending = await usersCollection.find({ role: "trainer", status: "pending" }).toArray();
   res.send(pending);
 });
 
 
-// Get all pending trainers
-app.get("/applied-trainers/:id", async (req, res) => {
+// Get a pending trainers
+app.get("/applied-trainers/:id",  verifyJWT, async (req, res) => {
   const id = req.params.id;
   try {
     const trainer = await usersCollection.findOne({ _id: new ObjectId(id), role: "trainer", status: "pending" });
@@ -274,10 +385,24 @@ app.get("/applied-trainers/:id", async (req, res) => {
   }
 });
 
+  // Get top 3 approved trainers
+   app.get('/team-trainers', async (req, res) => {
+   try {
+    const trainers = await usersCollection.find({ role: 'trainer', status: 'approved' })
+      .limit(3)
+      .project({ name: 1, bio: 1, skills: 1, photo: 1 }) // only necessary fields
+      .toArray();
+
+    res.send(trainers);
+  } catch (error) {
+    console.error('Error fetching trainers:', error);
+    res.status(500).send({ error: 'Failed to fetch trainers' });
+  }
+});
 
 
 // Approve trainer
-app.patch("/approve-trainer/:id", async (req, res) => {
+app.patch("/approve-trainer/:id", verifyJWT, async (req, res) => {
   const id = req.params.id;
   const result = await usersCollection.updateOne(
     { _id: new ObjectId(id) },
@@ -316,6 +441,32 @@ app.post("/reject-trainer/:id", async (req, res) => {
   }
 });
 
+// rejected trainer 
+
+app.get("/rejected-trainer/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+
+    // Find the rejected trainer by ID
+    const trainer = await usersCollection.findOne(
+      { _id: new ObjectId(id), status: "rejected" },
+      { projection: { feedback: 1, rejectedAt: 1, name: 1, email: 1 } } // select only useful fields
+    );
+
+    if (!trainer) {
+      return res.status(404).send({ message: "Rejected trainer not found." });
+    }
+
+    res.send({
+      message: "Rejected trainer feedback retrieved successfully.",
+      trainer,
+    });
+  } catch (error) {
+    console.error("Get Rejected Trainer Error:", error);
+    res.status(500).send({ message: "Server error retrieving rejected trainer feedback." });
+  }
+});
+
 
 // PATCH: Remove trainer role (set role to member)
 app.patch('/trainers/remove/:id', async (req, res) => {
@@ -332,13 +483,14 @@ app.patch('/trainers/remove/:id', async (req, res) => {
 
 // POST - Add new class by admin
 
-      app.post('/classes', async (req, res) => {
+   app.post('/classes', async (req, res) => {
       const classes = req.body;
       const result = await classCollection.insertOne(classes);
       res.send(result);
     })
 
 // GET /classes?search=cardio&page=1&limit=6
+
 app.get('/classes', async (req, res) => {
   const search = req.query.search || '';
   const page = parseInt(req.query.page) || 1;
@@ -360,6 +512,24 @@ app.get('/classes', async (req, res) => {
     classes,
   });
 });
+
+
+// GET  Featured Classes
+
+app.get('/featured-classes', async (req, res) => {
+  try {
+    const featured = await classCollection.find()
+      .sort({ bookingCount: -1 }) // Most booked first
+      .limit(6)
+      .toArray();
+
+    res.send(featured);
+  } catch (error) {
+    console.error('Featured classes error:', error);
+    res.status(500).send({ error: 'Failed to load featured classes' });
+  }
+});
+
 
 // POST /forums
 app.post('/forums', async (req, res) => {
@@ -395,6 +565,44 @@ app.get("/forums", async (req, res) => {
   res.send(forums);
 });
 
+// Get latest forum posts (e.g., latest 6)
+app.get('/forum/latest', async (req, res) => {
+  try {
+    const latestPosts = await forumCollection
+      .find()
+      .sort({ createdAt: -1 }) // newest first
+      .limit(4) // only 6 posts
+      .toArray();
+
+    res.send(latestPosts);
+  } catch (error) {
+    res.status(500).send({ error: 'Failed to fetch latest forum posts' });
+  }
+});
+
+// GET  single forum
+
+app.get("/forums/:id", async (req, res) => {
+  const id = req.params.id;
+
+  // Validate ObjectId
+  if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ error: "Invalid forum ID" });
+  }
+
+  try {
+    const forum = await forumCollection.findOne({ _id: new ObjectId(id) });
+    if (!forum) {
+      return res.status(404).send({ error: "Forum post not found" });
+    }
+
+    res.send(forum);
+  } catch (error) {
+    res.status(500).send({ error: "Server error" });
+  }
+});
+
+
 // PATCH: Upvote or Downvote
 
 app.patch('/forums/:id/:type', async (req, res) => {
@@ -429,6 +637,22 @@ app.patch('/forums/:id/:type', async (req, res) => {
     res.status(500).send({ error: 'Server error' });
   }
 });
+
+// GET latest forum posts
+app.get('/forum/latest', async (req, res) => {
+  try {
+    const latestPosts = await forumCollection
+      .find()
+      .sort({ createdAt: -1 })  // Ensure you store createdAt in your posts
+      .limit(6)
+      .toArray();
+
+    res.send(latestPosts);
+  } catch (err) {
+    res.status(500).send({ message: 'Failed to fetch forum posts.' });
+  }
+});
+
 
 // POST - Add a new slot
 
@@ -492,15 +716,20 @@ app.get('/slots', async (req, res) => {
   
     //Deleting slot
 
-    app.delete('/slots/:id',   async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) }
-      const result = await slotsCollection.deleteOne(query);
-      res.send(result);
-    })
+   app.delete('/slot/:id', async (req, res) => {
+  const id = req.params.id;
+  const result = await slotsCollection.deleteOne({ _id: new ObjectId(id) });
+
+  if (result.deletedCount > 0) {
+    res.send({ success: true });
+  } else {
+    res.status(404).send({ error: 'Slot not found' });
+  }
+});
+
 
     // POST - Newsletter Subscriber (check both users and subscribers)
-app.post('/subscribers', async (req, res) => {
+app.post('/subscribers', verifyJWT, async (req, res) => {
   const { email } = req.body;
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -533,7 +762,7 @@ app.post('/subscribers', async (req, res) => {
 });
 
 // Get all subscribers
-app.get("/subscribers", async (req, res) => {
+app.get("/subscribers", verifyJWT, async (req, res) => {
   const result = await subscriberCollection.find().toArray();
   res.send(result);
 });
@@ -541,7 +770,7 @@ app.get("/subscribers", async (req, res) => {
 
 
   // POST - Payment-intent by stripe
-    app.post('/create-payment-intent', async (req, res) => {
+    app.post('/create-payment-intent', verifyJWT, async (req, res) => {
    const amountInCents  = req.body.amountInCents;
 
   try {
@@ -559,7 +788,7 @@ app.get("/subscribers", async (req, res) => {
 
     // POST - Payment system post method
 
-    app.post('/payments', async (req, res) => {
+    app.post('/payments', verifyJWT, async (req, res) => {
     const payment = req.body;
     try {
     const result = await paymentCollection.insertOne(payment);
@@ -594,17 +823,17 @@ app.get("/subscribers", async (req, res) => {
 
 // Get all payments
  
-app.get('/payments', async (req, res) => {
-  const email = req.query.email;
-  if (!email) return res.status(400).send({ error: 'Email required' });
-
-  const payments = await paymentCollection.find({ userEmail: email }).toArray();
-  res.send(payments);
+app.get('/payments', verifyJWT, async (req, res) => {
+  try {
+    const payments = await paymentCollection.find().toArray();
+    res.send(payments);
+  } catch (err) {
+    res.status(500).send({ error: 'Failed to fetch payments' });
+  }
 });
 
-
 // Get subscriber vs paid member counts
-app.get('/member-stats', async (req, res) => {
+app.get('/member-stats', verifyJWT, async (req, res) => {
   try {
     const totalSubscribers = await subscriberCollection.countDocuments();
 
@@ -626,6 +855,48 @@ app.get('/member-stats', async (req, res) => {
   }
 });
 
+// 📊 GET - Dashboard Stats
+app.get('/dashboard-stats', verifyJWT, async (req, res) => {
+  try {
+    // 1️⃣ Total users (members + trainers + admin)
+    const totalUsers = await usersCollection.countDocuments();
+
+    // 2️⃣ Count trainers
+    const totalTrainers = await usersCollection.countDocuments({ role: 'trainer' });
+
+    // 3️⃣ Count members (role = member)
+    const totalMembers = await usersCollection.countDocuments({ role: 'member' });
+
+    // 4️⃣ Count subscribers
+    const totalSubscribers = await subscriberCollection.countDocuments();
+
+    // 5️⃣ Count total classes
+    const totalClasses = await classCollection.countDocuments();
+
+    // 6️⃣ Count reviews
+    const totalReviews = await reviewCollection.countDocuments();
+
+    // 7️⃣ Count forum posts
+    const totalForums = await forumCollection.countDocuments();
+
+    // 8️⃣ Return all in one object
+    res.send({
+      totalUsers,
+      totalMembers,
+      totalTrainers,
+      totalSubscribers,
+      totalClasses,
+      totalReviews,
+      totalForums
+    });
+
+  } catch (error) {
+    console.error('Dashboard stats error:', error);
+    res.status(500).send({ message: 'Failed to load dashboard stats', error: error.message });
+  }
+});
+
+
 
     // Logout
     app.get('/logout', async (req, res) => {
@@ -646,15 +917,15 @@ app.get('/member-stats', async (req, res) => {
     // Ping Command to Check MongoDB Deployment
     // await client.db('admin').command({ ping: 1 });
     // console.log('Pinged your deployment. MongoDB connection healthy 🚀');
+ 
 
-  } catch (error) {
-    console.error(error);
-  }
-}
+// run();
 
-run();
+app.get('/', (req, res) => {
+  res.send('SparkFit Server running')
+})
 
-// Start Server
+// // Start Server
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log('SparkFit server Running');
 });
